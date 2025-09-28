@@ -1,0 +1,104 @@
+// This file is part of www.nand2tetris.org
+// and the book "The Elements of Computing Systems"
+// by Nisan and Schocken, MIT Press.
+// File name: projects/5/CPU.hdl
+/**
+ * The Hack Central Processing unit (CPU).
+ * Parses the binary code in the instruction input and executes it according to the
+ * Hack machine language specification. In the case of a C-instruction, computes the
+ * function specified by the instruction. If the instruction specifies to read a memory
+ * value, the inM input is expected to contain this value. If the instruction specifies
+ * to write a value to the memory, sets the outM output to this value, sets the addressM
+ * output to the target address, and asserts the writeM output (when writeM = 0, any
+ * value may appear in outM).
+ * If the reset input is 0, computes the address of the next instruction and sets the
+ * pc output to that value. If the reset input is 1, sets pc to 0.
+ * Note: The outM and writeM outputs are combinational: they are affected by the
+ * instruction's execution during the current cycle. The addressM and pc outputs are
+ * clocked: although they are affected by the instruction's execution, they commit to
+ * their new values only in the next cycle.
+ */
+CHIP CPU {
+
+    IN  inM[16],         // メモリの入力。ALUの入力になる可能性がある。
+        instruction[16], // 実行する命令
+        reset;           // trueの場合、PCを0にリセットしてプログラムを最初から再開する。
+
+    OUT outM[16],        // メモリに書き込む値（ALUの計算結果）。
+        writeM,          // 1の場合、outMの値をメモリに書き込む
+        addressM[15],    // メモリのアドレス。Aレジスタの下位15ビット
+        pc[15];          // 次に実行すべき命令のアドレス（PCのout）
+
+    PARTS:
+    // # 処理のフラグ立て
+
+    // C命令フラグ (instruction[15] = 1)
+    And(a=instruction[15], b=true, out=isCInst); 
+    // A命令フラグ (instruction[15] = 0)
+    Not(in=instruction[15], out=isAInst); 
+    
+    // C命令 111accccccdddjjj
+    // a = メモリを参照するかどうか
+    // c = なんの計算するか
+    // d = どこに保存するか
+    // j = どこにジャンプするか
+
+    // C命令のメモリへの保存フラグ (C命令かつ d3=instruction[3]がtrue)
+    And(a=isCInst, b=instruction[3], out=writeM);   
+    // C命令のDレジスタへの保存フラグ (C命令かつ d2=instruction[4]がtrue)
+    And(a=isCInst, b=instruction[4], out=loadD);    
+    // C命令のAレジスタへの保存フラグ (C命令かつ d1=instruction[5]がtrue)
+    And(a=isCInst, b=instruction[5], out=loadAByC); 
+    
+    // # レジスタへの保存
+
+    // Aレジスタへの保存フラグ（A命令 or C命令で保存する場合）
+    Or(a=isAInst, b=loadAByC, out=loadA); 
+    
+    // Aレジスタに保存する値の決定
+    // A命令 (sel=0): instruction の値
+    // C命令 (sel=1): ALUOut (ALUの演算結果) 
+    Mux16(a=instruction, b=ALUOut, sel=isCInst, out=input);
+    // Aレジスタへの保存 （AOutはジャンプ先になる）
+    ARegister(in=input, load=loadA, out=AOut, out[0..14]=addressM);
+
+    // Dレジスタへの保存
+    DRegister(in=ALUOut, load=loadD, out=ALUx);
+
+    // ALUで読み込む値の決定（instruction の a）
+    Mux16(a=AOut, b=inM, sel=instruction[12], out=ALUy);
+
+    // ALUで計算
+    ALU(
+        x=ALUx,
+        y=ALUy, 
+        zx=instruction[11],
+        nx=instruction[10],
+        zy=instruction[9], 
+        ny=instruction[8],
+        f=instruction[7],
+        no=instruction[6],
+        out=outM, // RAMに書き込む値
+        out=ALUOut, // C命令の入力
+        zr=ALUZr,
+        ng=ALUNg
+    );    
+
+    // # プログラムカウンタ（PC）とジャンプ判定
+    Not(in=ALUZr, out=notZr);
+    Not(in=ALUNg, out=notNg);
+    And(a=notZr, b=notNg, out=gt);
+    And(a=instruction[0], b=gt, out=jgt); 
+    And(a=instruction[1], b=ALUZr, out=jeq);
+    And(a=instruction[2], b=ALUNg, out=jlt);
+
+    // ジャンプフラグ
+    Or(a=jgt, b=jeq, out=jumpOrEq);
+    Or(a=jumpOrEq, b=jlt, out=jump); 
+
+    // PCのロードフラグ: C命令かつジャンプ条件がtrue
+    And(a=isCInst, b=jump, out=loadPC);
+
+    // load=trueなら AOut（ジャンプ先）をセット
+    PC(in=AOut, load=loadPC, inc=true, reset=reset, out[0..14]=pc);
+}
